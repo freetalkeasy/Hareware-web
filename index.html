@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🔩 Hệ thống Quản lý Kho Phần cứng / 五金庫存管理系統</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700;800;900&family=Noto+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Noto Sans','Noto Sans TC','Segoe UI',sans-serif; background:#F3F4F6; }
+input,select,button { font-family:inherit; }
+input:focus,select:focus { border-color:#2563EB !important; box-shadow:0 0 0 3px rgba(37,99,235,.15); }
+button:hover { opacity:.9; }
+button:active { transform:scale(.97); }
+::-webkit-scrollbar { height:8px; width:8px; }
+::-webkit-scrollbar-thumb { background:#D1D5DB; border-radius:4px; }
+@media print {
+  .no-print { display:none !important; }
+  body { background:#fff; }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+/* ═══ Utilities ═══ */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+const fmt = (n) => new Intl.NumberFormat('en-US',{minimumFractionDigits:0,maximumFractionDigits:2}).format(n);
+const today = () => new Date().toISOString().slice(0,10);
+const monthKey = (d) => d.slice(0,7);
+
+/* ═══ localStorage persistence ═══ */
+function loadData(key, fallback) {
+  try { const v = localStorage.getItem('hw_'+key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+}
+function saveData(key, value) {
+  try { localStorage.setItem('hw_'+key, JSON.stringify(value)); } catch(e) { console.error(e); }
+}
+
+/* ═══ 4-COLOR: Blue / Red / Green / Black ═══ */
+const C = {
+  blue:'#2563EB', blueLight:'#3B82F6', blueBg:'#EFF6FF',
+  red:'#DC2626', redBg:'#FEF2F2',
+  green:'#16A34A', greenBg:'#F0FDF4',
+  black:'#111827',
+  gray:'#6B7280', grayLight:'#D1D5DB',
+  bg:'#F3F4F6', white:'#FFFFFF', surface:'#F9FAFB',
+};
+
+/* VN=14pt(19px) primary, ZH=12pt(16px) secondary */
+const FV=19, FC=16, FH=24, FS=22;
+
+const baseInput = {
+  background:C.white, border:`2px solid ${C.grayLight}`, borderRadius:8,
+  color:C.black, padding:'10px 14px', fontSize:FV, outline:'none',
+  width:'100%', boxSizing:'border-box',
+};
+
+const btnS = (color=C.blue, small=false) => ({
+  background:color, color: color===C.grayLight?C.gray:C.white,
+  border:'none', borderRadius:8, padding:small?'8px 16px':'10px 22px',
+  fontSize:FV, fontWeight:700, cursor:'pointer', whiteSpace:'nowrap',
+});
+
+/* ═══ Shared Components ═══ */
+function Input({value,onChange,placeholder,style,type='text',...props}) {
+  return React.createElement('input',{type,value:value||'',onChange:e=>onChange(e.target.value),placeholder,style:{...baseInput,...style},...props});
+}
+
+function Sel({value,onChange,children,style}) {
+  return React.createElement('select',{value,onChange:e=>onChange(e.target.value),style:{...baseInput,appearance:'auto',...style}},children);
+}
+
+function FieldLabel({vn,zh}) {
+  return React.createElement('label',{style:{display:'block',marginBottom:6}},
+    React.createElement('span',{style:{fontSize:FV,fontWeight:600,color:C.black}},vn),
+    zh && React.createElement('span',{style:{fontSize:FC,color:C.gray,marginLeft:4}},'/ '+zh)
+  );
+}
+
+function Modal({title,titleZh,onClose,children,width=780}) {
+  return React.createElement('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,.4)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}},
+    React.createElement('div',{style:{background:C.white,border:`2px solid ${C.grayLight}`,borderRadius:14,width,maxWidth:'96vw',maxHeight:'92vh',overflow:'auto',padding:28,boxShadow:'0 16px 48px rgba(0,0,0,.15)'}},
+      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20,borderBottom:`2px solid ${C.grayLight}`,paddingBottom:14}},
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.blue}},title),
+          titleZh && React.createElement('div',{style:{fontSize:FC,color:C.gray}},titleZh)
+        ),
+        React.createElement('button',{onClick:onClose,style:{...btnS(C.grayLight,true),color:C.gray},className:'no-print'},'✕ Đóng / 關閉')
+      ),
+      children
+    )
+  );
+}
+
+function Table({columns,data,onEdit,onDelete,headerColor=C.blue}) {
+  if(!data.length) return React.createElement('div',{style:{color:C.gray,padding:30,textAlign:'center',fontSize:FV}},'Không có dữ liệu / 暫無資料');
+  return React.createElement('div',{style:{overflowX:'auto'}},
+    React.createElement('table',{style:{width:'100%',borderCollapse:'collapse'}},
+      React.createElement('thead',null,
+        React.createElement('tr',{style:{background:headerColor}},
+          columns.map((c,i)=>React.createElement('th',{key:i,style:{padding:'14px',textAlign:'left',color:C.white,whiteSpace:'nowrap',fontSize:FV,fontWeight:700}},
+            c.label,
+            c.labelZh && React.createElement('div',{style:{fontSize:FC-2,fontWeight:400,opacity:.85}},c.labelZh)
+          ))
+        )
+      ),
+      React.createElement('tbody',null,
+        data.map((row,ri)=>React.createElement('tr',{key:row.id||ri,style:{borderBottom:`2px solid ${C.grayLight}`,background:ri%2===0?C.white:C.surface}},
+          columns.map((c,ci)=>React.createElement('td',{key:ci,style:{padding:'12px 14px',color:C.black,fontSize:FV,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:c.wrap?'normal':'nowrap'}},
+            c.key==='_actions'
+              ? React.createElement('div',{style:{display:'flex',gap:8},className:'no-print'},
+                  onEdit && React.createElement('button',{onClick:()=>onEdit(row),style:{...btnS(C.blue,true),fontSize:FC}},'✎ Sửa'),
+                  onDelete && React.createElement('button',{onClick:()=>onDelete(row.id),style:{...btnS(C.red,true),fontSize:FC}},'✕ Xóa')
+                )
+              : c.render ? c.render(row) : (row[c.key]??'')
+          ))
+        ))
+      )
+    )
+  );
+}
+
+function StatCard({vn,zh,value,color=C.blue}) {
+  const bgMap={[C.blue]:C.blueBg,[C.red]:C.redBg,[C.green]:C.greenBg,[C.black]:C.surface};
+  return React.createElement('div',{style:{background:bgMap[color]||C.surface,borderRadius:12,padding:'16px 20px',flex:'1 1 200px',borderLeft:`5px solid ${color}`}},
+    React.createElement('div',{style:{fontSize:FV,color:C.black,fontWeight:600}},vn),
+    React.createElement('div',{style:{fontSize:FC,color:C.gray}},zh),
+    React.createElement('div',{style:{fontSize:FS,fontWeight:800,color,marginTop:6}},value)
+  );
+}
+
+/* ═══ MAIN APP ═══ */
+function HardwareERP() {
+  const [tab, setTab] = useState('dashboard');
+  const [products, setProducts] = useState(()=>loadData('products',[]));
+  const [suppliers, setSuppliers] = useState(()=>loadData('suppliers',[]));
+  const [buyers, setBuyers] = useState(()=>loadData('buyers',[]));
+  const [purchases, setPurchases] = useState(()=>loadData('purchases',[]));
+  const [sales, setSales] = useState(()=>loadData('sales',[]));
+
+  useEffect(()=>{saveData('products',products)},[products]);
+  useEffect(()=>{saveData('suppliers',suppliers)},[suppliers]);
+  useEffect(()=>{saveData('buyers',buyers)},[buyers]);
+  useEffect(()=>{saveData('purchases',purchases)},[purchases]);
+  useEffect(()=>{saveData('sales',sales)},[sales]);
+
+  const getInventory = useCallback(()=>{
+    return products.map(p=>{
+      const ins = purchases.flatMap(pu=>(pu.items||[]).filter(i=>i.productId===p.id));
+      const outs = sales.flatMap(sa=>(sa.items||[]).filter(i=>i.productId===p.id));
+      const totalIn = ins.reduce((s,i)=>s+(Number(i.qty)||0),0);
+      const totalOut = outs.reduce((s,i)=>s+(Number(i.qty)||0),0);
+      const totalCost = ins.reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.price)||0),0);
+      const avgCost = totalIn>0?totalCost/totalIn:0;
+      return {...p,totalIn,totalOut,stock:totalIn-totalOut,avgCost,totalCost};
+    });
+  },[products,purchases,sales]);
+
+  const tabs=[
+    {id:'dashboard',icon:'📊',vn:'Tổng quan',zh:'總覽'},
+    {id:'products',icon:'📦',vn:'Danh mục',zh:'品項表'},
+    {id:'suppliers',icon:'🏭',vn:'Nhà cung cấp',zh:'供應商'},
+    {id:'buyers',icon:'👤',vn:'Khách hàng',zh:'買家'},
+    {id:'purchase',icon:'📥',vn:'Nhập hàng',zh:'進貨'},
+    {id:'sales',icon:'📤',vn:'Xuất hàng',zh:'出貨'},
+    {id:'inventory',icon:'📋',vn:'Tồn kho',zh:'庫存'},
+    {id:'reports',icon:'📈',vn:'Báo cáo',zh:'報表'},
+  ];
+
+  return React.createElement('div',{style:{background:C.bg,minHeight:'100vh'}},
+    /* Header */
+    React.createElement('div',{style:{background:'linear-gradient(135deg,#2563EB,#1D4ED8)',padding:'16px 24px'},className:'no-print'},
+      React.createElement('div',{style:{fontSize:FH,fontWeight:900,color:C.white}},'🔩 Hệ thống Quản lý Kho Phần cứng'),
+      React.createElement('div',{style:{fontSize:FC,color:'#93C5FD'}},'五金庫存管理系統 — Hardware ERP')
+    ),
+    /* Tabs */
+    React.createElement('div',{style:{background:C.white,borderBottom:`2px solid ${C.grayLight}`,padding:'0 16px',display:'flex',gap:2,overflowX:'auto'},className:'no-print'},
+      tabs.map(t=>React.createElement('button',{key:t.id,onClick:()=>setTab(t.id),style:{
+        background:tab===t.id?C.blue:'transparent',color:tab===t.id?C.white:C.gray,
+        border:'none',borderRadius:'8px 8px 0 0',padding:'12px 18px',cursor:'pointer',
+        whiteSpace:'nowrap',fontWeight:tab===t.id?700:500,fontSize:FV,
+      }},t.icon,' ',t.vn,React.createElement('span',{style:{fontSize:FC-2,marginLeft:3,opacity:.8}},t.zh)))
+    ),
+    /* Content */
+    React.createElement('div',{style:{padding:24,maxWidth:1400,margin:'0 auto'}},
+      tab==='dashboard' && React.createElement(Dashboard,{products,suppliers,buyers,purchases,sales,getInventory}),
+      tab==='products' && React.createElement(ProductsPage,{products,setProducts,suppliers}),
+      tab==='suppliers' && React.createElement(SuppliersPage,{suppliers,setSuppliers}),
+      tab==='buyers' && React.createElement(BuyersPage,{buyers,setBuyers}),
+      tab==='purchase' && React.createElement(PurchasePage,{purchases,setPurchases,products,suppliers}),
+      tab==='sales' && React.createElement(SalesPage,{sales,setSales,products,buyers,getInventory}),
+      tab==='inventory' && React.createElement(InventoryPage,{getInventory}),
+      tab==='reports' && React.createElement(ReportsPage,{products,suppliers,purchases,sales,getInventory})
+    )
+  );
+}
+
+/* ═══ DASHBOARD ═══ */
+function Dashboard({products,suppliers,buyers,purchases,sales,getInventory}) {
+  const inv=getInventory();
+  const totalStock=inv.reduce((s,i)=>s+i.stock,0);
+  const totalValue=inv.reduce((s,i)=>s+i.stock*i.avgCost,0);
+  const lowStock=inv.filter(i=>i.safetyStock&&i.stock<=i.safetyStock);
+  const tm=monthKey(today());
+  const mPur=purchases.filter(p=>monthKey(p.date)===tm).reduce((s,p)=>s+(p.items||[]).reduce((ss,i)=>ss+(Number(i.qty)||0)*(Number(i.price)||0),0),0);
+  const mSal=sales.filter(s=>monthKey(s.date)===tm).reduce((s,sa)=>s+(sa.items||[]).reduce((ss,i)=>ss+(Number(i.qty)||0)*(Number(i.salePrice)||0),0),0);
+
+  return React.createElement('div',null,
+    React.createElement('div',{style:{marginBottom:20}},
+      React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'📊 Tổng quan hệ thống'),
+      React.createElement('div',{style:{fontSize:FC,color:C.gray}},'系統總覽')
+    ),
+    React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:16,marginBottom:16}},
+      React.createElement(StatCard,{vn:'Sản phẩm',zh:'品項數',value:products.length,color:C.blue}),
+      React.createElement(StatCard,{vn:'Nhà cung cấp',zh:'供應商',value:suppliers.length,color:C.green}),
+      React.createElement(StatCard,{vn:'Khách hàng',zh:'買家',value:buyers.length,color:C.red}),
+      React.createElement(StatCard,{vn:'Tổng tồn kho',zh:'庫存總量',value:fmt(totalStock),color:C.black})
+    ),
+    React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:16,marginBottom:24}},
+      React.createElement(StatCard,{vn:'Giá trị tồn kho',zh:'庫存總值',value:fmt(totalValue),color:C.blue}),
+      React.createElement(StatCard,{vn:'Nhập hàng tháng này',zh:'本月進貨',value:fmt(mPur),color:C.red}),
+      React.createElement(StatCard,{vn:'Xuất hàng tháng này',zh:'本月出貨',value:fmt(mSal),color:C.green}),
+      React.createElement(StatCard,{vn:'Lợi nhuận gộp',zh:'本月毛利',value:fmt(mSal-mPur),color:mSal-mPur>=0?C.green:C.red})
+    ),
+    lowStock.length>0 && React.createElement('div',{style:{background:C.redBg,border:`2px solid ${C.red}`,borderRadius:12,padding:20}},
+      React.createElement('div',{style:{fontSize:FV,fontWeight:800,color:C.red,marginBottom:8}},'⚠️ Cảnh báo tồn kho thấp / 低庫存警告'),
+      lowStock.map(i=>React.createElement('div',{key:i.id,style:{fontSize:FV,color:C.black,padding:'6px 0'}},
+        '🔴 ',(i.nameVn||i.nameZh),' — Hiện có: ',React.createElement('b',null,i.stock),' / An toàn: ',React.createElement('b',null,i.safetyStock)
+      ))
+    )
+  );
+}
+
+/* ═══ PRODUCTS ═══ */
+function ProductsPage({products,setProducts,suppliers}) {
+  const [modal,setModal]=useState(null);
+
+  const handleSave=(item)=>{
+    if(item.id) setProducts(prev=>prev.map(p=>p.id===item.id?item:p));
+    else setProducts(prev=>[...prev,{...item,id:uid()}]);
+    setModal(null);
+  };
+
+  const columns=[
+    {key:'nameVn',label:'Tên sản phẩm (VN)',labelZh:'品項(越南)'},
+    {key:'nameZh',label:'Tên sản phẩm (TW)',labelZh:'品項(中文)'},
+    {key:'spec',label:'Quy cách',labelZh:'規格'},
+    {key:'partNo',label:'Mã hàng',labelZh:'料號'},
+    {key:'supplierIds',label:'NCC',labelZh:'供應商',render:r=>(r.supplierIds||[]).map(sid=>suppliers.find(s=>s.id===sid)?.name||'').filter(Boolean).join(', ')},
+    {key:'safetyStock',label:'SL an toàn',labelZh:'安全存量'},
+    {key:'_actions',label:'Thao tác',labelZh:'操作'},
+  ];
+
+  return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20,flexWrap:'wrap',gap:12},className:'no-print'},
+      React.createElement('div',null,
+        React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'📦 Danh mục sản phẩm'),
+        React.createElement('div',{style:{fontSize:FC,color:C.gray}},'品項表')
+      ),
+      React.createElement('button',{onClick:()=>setModal({nameVn:'',nameZh:'',spec:'',partNo:'',supplierIds:[],safetyStock:0}),style:btnS()},'＋ Thêm sản phẩm / 新增品項')
+    ),
+    React.createElement('div',{style:{background:C.white,borderRadius:12,border:`2px solid ${C.grayLight}`,overflow:'hidden'}},
+      React.createElement(Table,{columns,data:products,onEdit:row=>setModal({...row}),
+        onDelete:id=>{if(confirm('Xác nhận xóa? / 確定刪除？'))setProducts(prev=>prev.filter(p=>p.id!==id))}})
+    ),
+    modal && React.createElement(ProductModal,{item:modal,suppliers,onSave:handleSave,onClose:()=>setModal(null)})
+  );
+}
+
+function ProductModal({item,suppliers,onSave,onClose}) {
+  const [form,setForm]=useState(item);
+  const set=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const grid=(children)=>React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}},children);
+
+  return React.createElement(Modal,{title:form.id?'Sửa sản phẩm':'Thêm sản phẩm mới',titleZh:form.id?'編輯品項':'新增品項',onClose,width:700},
+    grid([
+      React.createElement('div',{key:'vn'},
+        React.createElement(FieldLabel,{vn:'Tên sản phẩm (VN)',zh:'品項(越南)'}),
+        React.createElement(Input,{value:form.nameVn,onChange:v=>set('nameVn',v),placeholder:'Nhập tên tiếng Việt'})
+      ),
+      React.createElement('div',{key:'zh'},
+        React.createElement(FieldLabel,{vn:'Tên sản phẩm (TW)',zh:'品項(中文)'}),
+        React.createElement(Input,{value:form.nameZh,onChange:v=>set('nameZh',v),placeholder:'中文品名'})
+      ),
+      React.createElement('div',{key:'spec'},
+        React.createElement(FieldLabel,{vn:'Quy cách',zh:'規格 (max 20)'}),
+        React.createElement(Input,{value:form.spec,onChange:v=>set('spec',v),maxLength:20})
+      ),
+      React.createElement('div',{key:'pn'},
+        React.createElement(FieldLabel,{vn:'Mã hàng',zh:'料號 Part No. (max 20)'}),
+        React.createElement(Input,{value:form.partNo,onChange:v=>set('partNo',v),maxLength:20})
+      ),
+      React.createElement('div',{key:'ss'},
+        React.createElement(FieldLabel,{vn:'Số lượng an toàn',zh:'安全存量'}),
+        React.createElement(Input,{type:'number',value:form.safetyStock,onChange:v=>set('safetyStock',Number(v))})
+      ),
+      React.createElement('div',{key:'sup'},
+        React.createElement(FieldLabel,{vn:'Nhà cung cấp',zh:'供應商 (多選)'}),
+        React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+          suppliers.map(s=>{
+            const sel=(form.supplierIds||[]).includes(s.id);
+            return React.createElement('button',{key:s.id,onClick:()=>{const ids=form.supplierIds||[];set('supplierIds',sel?ids.filter(x=>x!==s.id):[...ids,s.id]);},
+              style:{...btnS(sel?C.green:C.grayLight,true),color:sel?C.white:C.gray,fontSize:FC}},sel?'✓ ':'',s.name);
+          }),
+          !suppliers.length && React.createElement('span',{style:{color:C.gray,fontSize:FV}},'Vui lòng thêm NCC trước / 請先新增供應商')
+        )
+      ),
+    ]),
+    React.createElement('div',{style:{display:'flex',justifyContent:'flex-end',gap:10,marginTop:24,borderTop:`2px solid ${C.grayLight}`,paddingTop:16}},
+      React.createElement('button',{onClick:onClose,style:{...btnS(C.grayLight),color:C.gray}},'Hủy / 取消'),
+      React.createElement('button',{onClick:()=>onSave(form),style:btnS()},'✓ Lưu / 儲存')
+    )
+  );
+}
+
+/* ═══ SUPPLIERS ═══ */
+function SuppliersPage({suppliers,setSuppliers}) {
+  const [modal,setModal]=useState(null);
+  const handleSave=(item)=>{if(item.id)setSuppliers(prev=>prev.map(s=>s.id===item.id?item:s));else setSuppliers(prev=>[...prev,{...item,id:uid()}]);setModal(null);};
+  const columns=[
+    {key:'name',label:'Tên NCC',labelZh:'供應商名稱'},
+    {key:'contact',label:'Người liên hệ',labelZh:'聯絡人'},
+    {key:'phone',label:'Điện thoại',labelZh:'電話'},
+    {key:'fax',label:'Fax',labelZh:'傳真'},
+    {key:'address',label:'Địa chỉ',labelZh:'地址'},
+    {key:'_actions',label:'Thao tác',labelZh:'操作'},
+  ];
+  return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20,flexWrap:'wrap',gap:12},className:'no-print'},
+      React.createElement('div',null,
+        React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'🏭 Nhà cung cấp'),
+        React.createElement('div',{style:{fontSize:FC,color:C.gray}},'供應商管理')
+      ),
+      React.createElement('button',{onClick:()=>setModal({name:'',phone:'',fax:'',address:'',contact:''}),style:btnS()},'＋ Thêm NCC / 新增')
+    ),
+    React.createElement('div',{style:{background:C.white,borderRadius:12,border:`2px solid ${C.grayLight}`,overflow:'hidden'}},
+      React.createElement(Table,{columns,data:suppliers,headerColor:C.green,onEdit:row=>setModal({...row}),onDelete:id=>{if(confirm('Xác nhận xóa?'))setSuppliers(prev=>prev.filter(s=>s.id!==id))}})
+    ),
+    modal && React.createElement(Modal,{title:modal.id?'Sửa NCC':'Thêm NCC mới',titleZh:modal.id?'編輯供應商':'新增供應商',onClose:()=>setModal(null),width:580},
+      React.createElement(EntityForm,{item:modal,fields:[
+        {key:'name',vn:'Tên NCC',zh:'名稱',full:true},{key:'contact',vn:'Người liên hệ',zh:'聯絡人'},
+        {key:'phone',vn:'Điện thoại',zh:'電話',max:20},{key:'fax',vn:'Fax',zh:'傳真',max:20},
+        {key:'address',vn:'Địa chỉ',zh:'地址',full:true},
+      ],onSave:handleSave,onClose:()=>setModal(null)})
+    )
+  );
+}
+
+/* ═══ BUYERS ═══ */
+function BuyersPage({buyers,setBuyers}) {
+  const [modal,setModal]=useState(null);
+  const handleSave=(item)=>{if(item.id)setBuyers(prev=>prev.map(b=>b.id===item.id?item:b));else setBuyers(prev=>[...prev,{...item,id:uid()}]);setModal(null);};
+  const columns=[
+    {key:'name',label:'Tên khách hàng',labelZh:'買家名稱'},
+    {key:'phone',label:'Điện thoại',labelZh:'電話'},
+    {key:'fax',label:'Fax',labelZh:'傳真'},
+    {key:'address',label:'Địa chỉ giao hàng',labelZh:'出貨地址'},
+    {key:'_actions',label:'Thao tác',labelZh:'操作'},
+  ];
+  return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20,flexWrap:'wrap',gap:12},className:'no-print'},
+      React.createElement('div',null,
+        React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'👤 Khách hàng'),
+        React.createElement('div',{style:{fontSize:FC,color:C.gray}},'買家管理')
+      ),
+      React.createElement('button',{onClick:()=>setModal({name:'',address:'',phone:'',fax:''}),style:btnS()},'＋ Thêm KH / 新增')
+    ),
+    React.createElement('div',{style:{background:C.white,borderRadius:12,border:`2px solid ${C.grayLight}`,overflow:'hidden'}},
+      React.createElement(Table,{columns,data:buyers,headerColor:C.red,onEdit:row=>setModal({...row}),onDelete:id=>{if(confirm('Xác nhận xóa?'))setBuyers(prev=>prev.filter(b=>b.id!==id))}})
+    ),
+    modal && React.createElement(Modal,{title:modal.id?'Sửa KH':'Thêm KH mới',titleZh:modal.id?'編輯買家':'新增買家',onClose:()=>setModal(null),width:580},
+      React.createElement(EntityForm,{item:modal,fields:[
+        {key:'name',vn:'Tên KH',zh:'名稱',full:true},{key:'phone',vn:'Điện thoại',zh:'電話',max:20},
+        {key:'fax',vn:'Fax',zh:'傳真',max:20},{key:'address',vn:'Địa chỉ giao hàng',zh:'出貨地址',full:true},
+      ],onSave:handleSave,onClose:()=>setModal(null)})
+    )
+  );
+}
+
+function EntityForm({item,fields,onSave,onClose}) {
+  const [form,setForm]=useState(item);
+  const set=(k,v)=>setForm(p=>({...p,[k]:v}));
+  return React.createElement('div',null,
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}},
+      fields.map(f=>React.createElement('div',{key:f.key,style:f.full?{gridColumn:'1 / -1'}:{}},
+        React.createElement(FieldLabel,{vn:f.vn,zh:f.zh}),
+        React.createElement(Input,{value:form[f.key],onChange:v=>set(f.key,v),maxLength:f.max})
+      ))
+    ),
+    React.createElement('div',{style:{display:'flex',justifyContent:'flex-end',gap:10,marginTop:24,borderTop:`2px solid ${C.grayLight}`,paddingTop:16}},
+      React.createElement('button',{onClick:onClose,style:{...btnS(C.grayLight),color:C.gray}},'Hủy / 取消'),
+      React.createElement('button',{onClick:()=>onSave(form),style:btnS()},'✓ Lưu / 儲存')
+    )
+  );
+}
+
+/* ═══ PURCHASE (進貨) ═══ */
+function PurchasePage({purchases,setPurchases,products,suppliers}) {
+  const [modal,setModal]=useState(null);
+  const handleSave=(item)=>{if(item.id)setPurchases(prev=>prev.map(p=>p.id===item.id?item:p));else setPurchases(prev=>[...prev,{...item,id:uid()}]);setModal(null);};
+  const getTotal=(items)=>(items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.price)||0),0);
+  const columns=[
+    {key:'date',label:'Ngày nhập',labelZh:'進貨日'},
+    {key:'supplierId',label:'Nhà cung cấp',labelZh:'供應商',render:r=>suppliers.find(s=>s.id===r.supplierId)?.name||''},
+    {key:'items',label:'Số SP',labelZh:'品項數',render:r=>(r.items||[]).length},
+    {key:'total',label:'Tổng tiền',labelZh:'總價',render:r=>React.createElement('span',{style:{color:C.red,fontWeight:700}},fmt(getTotal(r.items)))},
+    {key:'expectedDate',label:'Ngày giao dự kiến',labelZh:'預計出貨日'},
+    {key:'_actions',label:'Thao tác',labelZh:'操作'},
+  ];
+  return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20,flexWrap:'wrap',gap:12},className:'no-print'},
+      React.createElement('div',null,
+        React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'📥 Hệ thống nhập hàng'),
+        React.createElement('div',{style:{fontSize:FC,color:C.gray}},'進貨系統')
+      ),
+      React.createElement('button',{onClick:()=>setModal({supplierId:'',date:today(),expectedDate:'',items:[{productId:'',qty:'',price:''}]}),style:btnS()},'＋ Phiếu nhập mới / 新增進貨單')
+    ),
+    React.createElement('div',{style:{background:C.white,borderRadius:12,border:`2px solid ${C.grayLight}`,overflow:'hidden'}},
+      React.createElement(Table,{columns,data:[...purchases].sort((a,b)=>b.date.localeCompare(a.date)),headerColor:C.red,
+        onEdit:row=>setModal({...row,items:[...(row.items||[])]}),onDelete:id=>{if(confirm('Xác nhận xóa?'))setPurchases(prev=>prev.filter(p=>p.id!==id))}})
+    ),
+    modal && React.createElement(OrderModal,{type:'purchase',item:modal,products,entities:suppliers,entityVn:'Nhà cung cấp',entityZh:'供應商',onSave:handleSave,onClose:()=>setModal(null)})
+  );
+}
+
+/* ═══ SALES (出貨) ═══ */
+function SalesPage({sales,setSales,products,buyers,getInventory}) {
+  const [modal,setModal]=useState(null);
+  const handleSave=(item)=>{if(item.id)setSales(prev=>prev.map(s=>s.id===item.id?item:s));else setSales(prev=>[...prev,{...item,id:uid()}]);setModal(null);};
+  const getTotal=(items)=>(items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.salePrice)||0),0);
+  const columns=[
+    {key:'date',label:'Ngày xuất',labelZh:'出貨日'},
+    {key:'buyerId',label:'Khách hàng',labelZh:'買家',render:r=>buyers.find(b=>b.id===r.buyerId)?.name||''},
+    {key:'items',label:'Số SP',labelZh:'品項數',render:r=>(r.items||[]).length},
+    {key:'total',label:'Tổng tiền',labelZh:'總價',render:r=>React.createElement('span',{style:{color:C.green,fontWeight:700}},fmt(getTotal(r.items)))},
+    {key:'deliveryDate',label:'Ngày giao',labelZh:'交貨日'},
+    {key:'_actions',label:'Thao tác',labelZh:'操作'},
+  ];
+  return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20,flexWrap:'wrap',gap:12},className:'no-print'},
+      React.createElement('div',null,
+        React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'📤 Hệ thống xuất hàng'),
+        React.createElement('div',{style:{fontSize:FC,color:C.gray}},'出貨系統')
+      ),
+      React.createElement('button',{onClick:()=>setModal({buyerId:'',date:today(),deliveryDate:'',items:[{productId:'',qty:'',salePrice:''}]}),style:btnS()},'＋ Phiếu xuất mới / 新增出貨單')
+    ),
+    React.createElement('div',{style:{background:C.white,borderRadius:12,border:`2px solid ${C.grayLight}`,overflow:'hidden'}},
+      React.createElement(Table,{columns,data:[...sales].sort((a,b)=>b.date.localeCompare(a.date)),headerColor:C.green,
+        onEdit:row=>setModal({...row,items:[...(row.items||[])]}),onDelete:id=>{if(confirm('Xác nhận xóa?'))setSales(prev=>prev.filter(s=>s.id!==id))}})
+    ),
+    modal && React.createElement(OrderModal,{type:'sales',item:modal,products,entities:buyers,entityVn:'Khách hàng',entityZh:'買家',onSave:handleSave,onClose:()=>setModal(null),inventory:getInventory()})
+  );
+}
+
+/* ═══ ORDER MODAL (shared) ═══ */
+function OrderModal({type,item,products,entities,entityVn,entityZh,onSave,onClose,inventory}) {
+  const isPurchase=type==='purchase';
+  const entityKey=isPurchase?'supplierId':'buyerId';
+  const priceKey=isPurchase?'price':'salePrice';
+  const dateKey2=isPurchase?'expectedDate':'deliveryDate';
+  const [form,setForm]=useState(item);
+  const set=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const setItem=(idx,k,v)=>{const items=[...form.items];items[idx]={...items[idx],[k]:v};set('items',items);};
+  const addItem=()=>set('items',[...form.items,{productId:'',qty:'',[priceKey]:''}]);
+  const removeItem=(idx)=>set('items',form.items.filter((_,i)=>i!==idx));
+  const total=form.items.reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i[priceKey])||0),0);
+
+  return React.createElement(Modal,{title:isPurchase?'📥 Phiếu nhập hàng':'📤 Phiếu xuất hàng',titleZh:isPurchase?'進貨單':'出貨單',onClose,width:900},
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16,marginBottom:20}},
+      React.createElement('div',null,React.createElement(FieldLabel,{vn:entityVn,zh:entityZh}),
+        React.createElement(Sel,{value:form[entityKey],onChange:v=>set(entityKey,v)},
+          React.createElement('option',{value:''},'-- Chọn / 請選擇 --'),
+          entities.map(e=>React.createElement('option',{key:e.id,value:e.id},e.name)))),
+      React.createElement('div',null,React.createElement(FieldLabel,{vn:isPurchase?'Ngày nhập':'Ngày bán',zh:isPurchase?'進貨日期':'銷售日期'}),
+        React.createElement(Input,{type:'date',value:form.date,onChange:v=>set('date',v)})),
+      React.createElement('div',null,React.createElement(FieldLabel,{vn:isPurchase?'Ngày giao dự kiến':'Ngày giao hàng',zh:isPurchase?'預計出貨日':'出貨日期'}),
+        React.createElement(Input,{type:'date',value:form[dateKey2],onChange:v=>set(dateKey2,v)}))
+    ),
+    React.createElement('div',{style:{fontSize:FV,color:C.blue,fontWeight:800,marginBottom:12}},
+      'Chi tiết sản phẩm ',React.createElement('span',{style:{fontSize:FC,color:C.gray}},'/ 品項明細')),
+    React.createElement('div',{style:{background:C.surface,borderRadius:10,padding:16,border:`1px solid ${C.grayLight}`}},
+      form.items.map((it,idx)=>
+        React.createElement('div',{key:idx,style:{display:'grid',gridTemplateColumns:'2.5fr 1fr 1fr 1fr auto',gap:10,marginBottom:10,alignItems:'end'}},
+          React.createElement('div',null,
+            idx===0 && React.createElement('div',{style:{fontSize:FC,color:C.gray,fontWeight:600,marginBottom:4}},'Sản phẩm / 品項'),
+            React.createElement(Sel,{value:it.productId,onChange:v=>setItem(idx,'productId',v)},
+              React.createElement('option',{value:''},'-- Chọn --'),
+              products.map(p=>{
+                const stockInfo=!isPurchase&&inventory?` [Tồn:${inventory.find(i=>i.id===p.id)?.stock||0}]`:'';
+                return React.createElement('option',{key:p.id,value:p.id},(p.nameVn||p.nameZh)+' ('+p.partNo+')'+stockInfo);
+              }))),
+          React.createElement('div',null,
+            idx===0 && React.createElement('div',{style:{fontSize:FC,color:C.gray,fontWeight:600,marginBottom:4}},isPurchase?'Đơn giá / 單價':'Giá bán / 報價'),
+            React.createElement(Input,{type:'number',value:it[priceKey],onChange:v=>setItem(idx,priceKey,v)})),
+          React.createElement('div',null,
+            idx===0 && React.createElement('div',{style:{fontSize:FC,color:C.gray,fontWeight:600,marginBottom:4}},'Số lượng / 數量'),
+            React.createElement(Input,{type:'number',value:it.qty,onChange:v=>setItem(idx,'qty',v)})),
+          React.createElement('div',null,
+            idx===0 && React.createElement('div',{style:{fontSize:FC,color:C.gray,fontWeight:600,marginBottom:4}},'Thành tiền / 小計'),
+            React.createElement('div',{style:{color:C.red,fontSize:FV,padding:'10px 0',fontWeight:700}},fmt((Number(it.qty)||0)*(Number(it[priceKey])||0)))),
+          React.createElement('button',{onClick:()=>removeItem(idx),style:{...btnS(C.red,true),fontSize:FC}},'✕')
+        )
+      ),
+      React.createElement('button',{onClick:addItem,style:{...btnS(C.white,true),color:C.blue,border:`2px dashed ${C.blue}`,boxShadow:'none',marginTop:8,fontSize:FV}},'＋ Thêm SP / 增加品項')
+    ),
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:24,paddingTop:16,borderTop:`3px solid ${C.blue}`}},
+      React.createElement('div',null,
+        React.createElement('span',{style:{fontSize:FV,color:C.black}},'Tổng cộng / 總計: '),
+        React.createElement('span',{style:{fontSize:FH,fontWeight:900,color:C.blue}},fmt(total))),
+      React.createElement('div',{style:{display:'flex',gap:10}},
+        React.createElement('button',{onClick:onClose,style:{...btnS(C.grayLight),color:C.gray}},'Hủy / 取消'),
+        React.createElement('button',{onClick:()=>onSave(form),style:btnS()},'✓ Lưu / 儲存'))
+    )
+  );
+}
+
+/* ═══ INVENTORY ═══ */
+function InventoryPage({getInventory}) {
+  const inv=getInventory();
+  const [filter,setFilter]=useState('');
+  const filtered=inv.filter(i=>(i.nameVn||'').toLowerCase().includes(filter.toLowerCase())||(i.nameZh||'').toLowerCase().includes(filter.toLowerCase())||(i.partNo||'').toLowerCase().includes(filter.toLowerCase()));
+  const columns=[
+    {key:'partNo',label:'Mã hàng',labelZh:'料號'},
+    {key:'nameVn',label:'Tên SP (VN)',labelZh:'品項(越南)'},
+    {key:'nameZh',label:'Tên SP (TW)',labelZh:'品項(中文)'},
+    {key:'spec',label:'Quy cách',labelZh:'規格'},
+    {key:'totalIn',label:'Nhập',labelZh:'進貨量'},
+    {key:'totalOut',label:'Xuất',labelZh:'出貨量'},
+    {key:'stock',label:'Tồn kho',labelZh:'庫存量',render:r=>React.createElement('span',{style:{color:r.safetyStock&&r.stock<=r.safetyStock?C.red:C.green,fontWeight:800,fontSize:FV}},r.stock,r.safetyStock&&r.stock<=r.safetyStock?' ⚠️':'')},
+    {key:'avgCost',label:'TB giá nhập',labelZh:'平均成本',render:r=>fmt(r.avgCost)},
+    {key:'val',label:'Giá trị tồn',labelZh:'庫存價值',render:r=>React.createElement('span',{style:{color:C.blue,fontWeight:700}},fmt(r.stock*r.avgCost))},
+    {key:'safetyStock',label:'SL an toàn',labelZh:'安全量'},
+  ];
+  return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20,gap:16,flexWrap:'wrap'}},
+      React.createElement('div',null,
+        React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'📋 Bảng tồn kho'),
+        React.createElement('div',{style:{fontSize:FC,color:C.gray}},'庫存總表')
+      ),
+      React.createElement(Input,{value:filter,onChange:setFilter,placeholder:'🔍 Tìm kiếm / 搜尋...',style:{maxWidth:300},className:'no-print'})
+    ),
+    React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:16,marginBottom:20}},
+      React.createElement(StatCard,{vn:'Sản phẩm',zh:'品項數',value:inv.length,color:C.blue}),
+      React.createElement(StatCard,{vn:'Tổng tồn kho',zh:'總庫存',value:fmt(inv.reduce((s,i)=>s+i.stock,0)),color:C.green}),
+      React.createElement(StatCard,{vn:'Giá trị tồn kho',zh:'庫存總值',value:fmt(inv.reduce((s,i)=>s+i.stock*i.avgCost,0)),color:C.black}),
+      React.createElement(StatCard,{vn:'Tồn kho thấp',zh:'低庫存',value:inv.filter(i=>i.safetyStock&&i.stock<=i.safetyStock).length,color:C.red})
+    ),
+    React.createElement('div',{style:{background:C.white,borderRadius:12,border:`2px solid ${C.grayLight}`,overflow:'hidden'}},
+      React.createElement(Table,{columns,data:filtered,headerColor:C.black}))
+  );
+}
+
+/* ═══ REPORTS ═══ */
+function ReportsPage({products,suppliers,purchases,sales,getInventory}) {
+  const [rt,setRt]=useState('inventory');
+  const [month,setMonth]=useState(monthKey(today()));
+  const [sid,setSid]=useState('');
+  const inv=getInventory();
+
+  const rBtns=[
+    {id:'inventory',vn:'📋 Báo cáo tồn kho',zh:'庫存報表',color:C.blue},
+    {id:'supplier_invoice',vn:'🧾 Hóa đơn NCC',zh:'請款單',color:C.green},
+    {id:'monthly_stock',vn:'📊 Tồn kho cuối tháng',zh:'月底庫存',color:C.black},
+    {id:'payables',vn:'💳 Khoản phải trả',zh:'應付款項',color:C.red},
+  ];
+
+  return React.createElement('div',null,
+    React.createElement('div',{style:{marginBottom:20}},
+      React.createElement('div',{style:{fontSize:FH,fontWeight:800,color:C.black}},'📈 Trung tâm báo cáo'),
+      React.createElement('div',{style:{fontSize:FC,color:C.gray}},'報表中心')),
+    React.createElement('div',{style:{display:'flex',gap:10,marginBottom:20,flexWrap:'wrap'},className:'no-print'},
+      rBtns.map(r=>React.createElement('button',{key:r.id,onClick:()=>setRt(r.id),
+        style:{...btnS(rt===r.id?r.color:C.grayLight),color:rt===r.id?C.white:C.gray,fontSize:FV}},r.vn,' ',React.createElement('span',{style:{fontSize:FC}},r.zh)))
+    ),
+    React.createElement('div',{style:{display:'flex',gap:16,marginBottom:20,alignItems:'end',flexWrap:'wrap'},className:'no-print'},
+      React.createElement('div',null,React.createElement(FieldLabel,{vn:'Tháng',zh:'月份'}),
+        React.createElement(Input,{type:'month',value:month,onChange:setMonth,style:{maxWidth:200}})),
+      (rt==='supplier_invoice'||rt==='payables') && React.createElement('div',null,React.createElement(FieldLabel,{vn:'Nhà cung cấp',zh:'供應商'}),
+        React.createElement(Sel,{value:sid,onChange:setSid,style:{maxWidth:250}},
+          React.createElement('option',{value:''},'Tất cả / 全部'),
+          suppliers.map(s=>React.createElement('option',{key:s.id,value:s.id},s.name)))),
+      React.createElement('button',{onClick:()=>window.print(),style:{...btnS(C.black),marginLeft:'auto'}},'🖨️ In báo cáo / 列印')
+    ),
+    React.createElement('div',{style:{background:C.white,borderRadius:12,border:`2px solid ${C.grayLight}`,padding:24}},
+      rt==='inventory' && React.createElement(RptTable,{titleVn:'📋 Báo cáo tồn kho',titleZh:'庫存報表',color:C.blue,
+        headers:['Mã hàng\n料號','Tên SP(VN)\n品名','Tên SP(TW)\n品名','Quy cách\n規格','Tồn kho\n庫存量','TB giá\n平均成本','Giá trị\n庫存價值','An toàn\n安全量','Trạng thái\n狀態'],
+        rows:inv.map(r=>[r.partNo,r.nameVn,r.nameZh,r.spec,{v:r.stock,b:true},fmt(r.avgCost),{v:fmt(r.stock*r.avgCost),c:C.blue},r.safetyStock||'-',r.safetyStock&&r.stock<=r.safetyStock?{v:'⚠️ Thiếu/不足',c:C.red}:{v:'✅ OK',c:C.green}]),
+        footer:['Tổng/合計','','','',{v:fmt(inv.reduce((s,r)=>s+r.stock,0)),b:true},'',{v:fmt(inv.reduce((s,r)=>s+r.stock*r.avgCost,0)),c:C.blue},'','']}),
+      rt==='supplier_invoice' && React.createElement(SupplierInvoice,{purchases,suppliers,products,month,supplierId:sid}),
+      rt==='monthly_stock' && React.createElement(RptTable,{titleVn:'📊 Tồn kho cuối tháng — '+month,titleZh:'月底庫存 — '+month,color:C.black,
+        headers:['Mã hàng\n料號','Tên SP(VN)\n品名','Tên SP(TW)\n品名','Tồn kho\n庫存量','TB giá\n平均成本','Giá trị\n庫存價值'],
+        rows:inv.map(r=>[r.partNo,r.nameVn,r.nameZh,{v:r.stock,b:true},fmt(r.avgCost),{v:fmt(r.stock*r.avgCost),c:C.blue}]),
+        footer:['Tổng/合計','','',{v:fmt(inv.reduce((s,r)=>s+r.stock,0)),b:true},'',{v:fmt(inv.reduce((s,r)=>s+r.stock*r.avgCost,0)),c:C.blue}]}),
+      rt==='payables' && React.createElement(PayablesRpt,{purchases,suppliers,month,supplierId:sid})
+    )
+  );
+}
+
+function RptTable({titleVn,titleZh,color,headers,rows,footer}) {
+  return React.createElement('div',null,
+    React.createElement('div',{style:{marginBottom:16}},
+      React.createElement('div',{style:{fontSize:FV+2,fontWeight:800,color}},titleVn),
+      React.createElement('div',{style:{fontSize:FC,color:C.gray}},titleZh)),
+    React.createElement('table',{style:{width:'100%',borderCollapse:'collapse'}},
+      React.createElement('thead',null,React.createElement('tr',{style:{background:color}},
+        headers.map((h,i)=>{const parts=h.split('\n');return React.createElement('th',{key:i,style:{padding:'12px 14px',textAlign:'left',color:C.white,fontSize:FV,fontWeight:700}},parts[0],parts[1]&&React.createElement('div',{style:{fontSize:FC-2,fontWeight:400,opacity:.85}},parts[1]));}))),
+      React.createElement('tbody',null,rows.map((row,ri)=>React.createElement('tr',{key:ri,style:{borderBottom:`2px solid ${C.grayLight}`,background:ri%2?C.surface:C.white}},
+        row.map((cell,ci)=>{const isObj=typeof cell==='object'&&cell!==null;return React.createElement('td',{key:ci,style:{padding:'12px 14px',fontSize:FV,color:isObj&&cell.c?cell.c:C.black,fontWeight:isObj&&cell.b?800:400}},isObj?cell.v:cell);})))),
+      footer && React.createElement('tfoot',null,React.createElement('tr',{style:{borderTop:`3px solid ${color}`,background:color+'11'}},
+        footer.map((cell,i)=>{const isObj=typeof cell==='object'&&cell!==null;return React.createElement('td',{key:i,style:{padding:14,fontSize:FV,color:isObj&&cell.c?cell.c:color,fontWeight:800}},isObj?cell.v:cell);})))
+    )
+  );
+}
+
+function SupplierInvoice({purchases,suppliers,products,month,supplierId}) {
+  const filtered=purchases.filter(p=>monthKey(p.date)===month&&(!supplierId||p.supplierId===supplierId));
+  const grouped={};
+  filtered.forEach(p=>{if(!grouped[p.supplierId])grouped[p.supplierId]=[];grouped[p.supplierId].push(p);});
+  if(!Object.keys(grouped).length) return React.createElement('div',{style:{color:C.gray,fontSize:FV}},'Không có phiếu nhập tháng này / 本月無進貨記錄');
+
+  return React.createElement('div',null,
+    React.createElement('div',{style:{marginBottom:16}},
+      React.createElement('div',{style:{fontSize:FV+2,fontWeight:800,color:C.green}},'🧾 Hóa đơn NCC — '+month),
+      React.createElement('div',{style:{fontSize:FC,color:C.gray}},'供應商請款單')),
+    Object.entries(grouped).map(([sid,pList])=>{
+      const sup=suppliers.find(s=>s.id===sid);
+      const allItems=pList.flatMap(p=>(p.items||[]).map(i=>({...i,date:p.date})));
+      const grandTotal=allItems.reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.price)||0),0);
+      return React.createElement('div',{key:sid,style:{marginBottom:28,padding:20,background:C.surface,borderRadius:12,border:`2px solid ${C.grayLight}`}},
+        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:12,flexWrap:'wrap'}},
+          React.createElement('div',{style:{fontSize:FV+1,fontWeight:800,color:C.black}},sup?.name||'N/A'),
+          React.createElement('div',{style:{fontSize:FC,color:C.gray}},'📞 ',sup?.phone,'　📠 ',sup?.fax)),
+        React.createElement('table',{style:{width:'100%',borderCollapse:'collapse'}},
+          React.createElement('thead',null,React.createElement('tr',{style:{background:C.green}},
+            ['Ngày\n日期','Sản phẩm\n品項','Mã hàng\n料號','Đơn giá\n單價','SL\n數量','Thành tiền\n小計'].map((h,i)=>{const p=h.split('\n');return React.createElement('th',{key:i,style:{padding:'10px 12px',textAlign:'left',color:C.white,fontSize:FV,fontWeight:700}},p[0],React.createElement('div',{style:{fontSize:FC-2,opacity:.85}},p[1]));}))),
+          React.createElement('tbody',null,allItems.map((it,idx)=>{
+            const prod=products.find(p=>p.id===it.productId);
+            return React.createElement('tr',{key:idx,style:{borderBottom:`1px solid ${C.grayLight}`,background:idx%2?C.surface:C.white}},
+              React.createElement('td',{style:{padding:'10px 12px',fontSize:FV}},it.date),
+              React.createElement('td',{style:{padding:'10px 12px',fontSize:FV}},prod?.nameVn||prod?.nameZh),
+              React.createElement('td',{style:{padding:'10px 12px',fontSize:FV}},prod?.partNo),
+              React.createElement('td',{style:{padding:'10px 12px',fontSize:FV}},fmt(it.price)),
+              React.createElement('td',{style:{padding:'10px 12px',fontSize:FV}},it.qty),
+              React.createElement('td',{style:{padding:'10px 12px',fontSize:FV,color:C.red,fontWeight:700}},fmt((Number(it.qty)||0)*(Number(it.price)||0))));})),
+          React.createElement('tfoot',null,React.createElement('tr',{style:{background:C.greenBg}},
+            React.createElement('td',{colSpan:5,style:{padding:12,fontSize:FV,color:C.green,fontWeight:800,textAlign:'right'}},'Tổng phải trả / 應付總計:'),
+            React.createElement('td',{style:{padding:12,fontSize:FH,color:C.red,fontWeight:900}},fmt(grandTotal)))))
+      );
+    })
+  );
+}
+
+function PayablesRpt({purchases,suppliers,month,supplierId}) {
+  const filtered=purchases.filter(p=>monthKey(p.date)<=month&&(!supplierId||p.supplierId===supplierId));
+  const byS={};
+  filtered.forEach(p=>{if(!byS[p.supplierId])byS[p.supplierId]={total:0,count:0};byS[p.supplierId].total+=(p.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.price)||0),0);byS[p.supplierId].count++;});
+  const gt=Object.values(byS).reduce((s,v)=>s+v.total,0);
+  return React.createElement('div',null,
+    React.createElement('div',{style:{marginBottom:16}},
+      React.createElement('div',{style:{fontSize:FV+2,fontWeight:800,color:C.red}},'💳 Các khoản phải trả — đến '+month),
+      React.createElement('div',{style:{fontSize:FC,color:C.gray}},'應付款項 — 截至 '+month)),
+    React.createElement('table',{style:{width:'100%',borderCollapse:'collapse'}},
+      React.createElement('thead',null,React.createElement('tr',{style:{background:C.red}},
+        ['NCC\n供應商','Số phiếu\n進貨筆數','Tổng phải trả\n應付總額'].map((h,i)=>{const p=h.split('\n');return React.createElement('th',{key:i,style:{padding:'14px 16px',textAlign:'left',color:C.white,fontSize:FV,fontWeight:700}},p[0],React.createElement('div',{style:{fontSize:FC-2,opacity:.85}},p[1]));}))),
+      React.createElement('tbody',null,Object.entries(byS).map(([sid,data],ri)=>{
+        const sup=suppliers.find(s=>s.id===sid);
+        return React.createElement('tr',{key:sid,style:{borderBottom:`2px solid ${C.grayLight}`,background:ri%2?C.surface:C.white}},
+          React.createElement('td',{style:{padding:'14px 16px',fontWeight:700,fontSize:FV}},sup?.name||'N/A'),
+          React.createElement('td',{style:{padding:'14px 16px',fontSize:FV}},data.count),
+          React.createElement('td',{style:{padding:'14px 16px',color:C.red,fontWeight:800,fontSize:FV+2}},fmt(data.total)));})),
+      React.createElement('tfoot',null,React.createElement('tr',{style:{borderTop:`3px solid ${C.red}`,background:C.redBg}},
+        React.createElement('td',{colSpan:2,style:{padding:16,color:C.red,fontWeight:800,fontSize:FV+2}},'Tổng phải trả / 應付總計'),
+        React.createElement('td',{style:{padding:16,color:C.red,fontWeight:900,fontSize:FH}},fmt(gt)))))
+  );
+}
+
+/* ═══ RENDER ═══ */
+ReactDOM.render(React.createElement(HardwareERP), document.getElementById('root'));
+</script>
+</body>
+</html>
